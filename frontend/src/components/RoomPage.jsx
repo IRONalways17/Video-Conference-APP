@@ -32,8 +32,9 @@ function RoomPage() {
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' }
+      { urls: 'stun:stun.services.mozilla.com' },
+      { urls: 'stun:stun.openrelay.metered.ca:80' },
+      { urls: 'stun:stun.freeswitch.org' }
     ]
   };
 
@@ -59,27 +60,43 @@ function RoomPage() {
 
   const handleInteract = async () => {
     try {
+      console.log('🎥 Requesting media access...');
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: 'user'
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
       });
+      
+      console.log('✅ Media access granted');
       setLocalStream(stream);
       setHasJoined(true);
       
-      // Reconnect to signaling server with media stream
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        // Send join message with user ID
-        wsRef.current.send(JSON.stringify({
-          type: 'join',
-          roomId: roomId,
-          userId: userId
-        }));
-      } else {
-        connectToSignalingServer();
-      }
+      // Wait a moment for state to update
+      setTimeout(() => {
+        // Reconnect to signaling server with media stream
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          console.log('📡 Sending join message with media ready');
+          wsRef.current.send(JSON.stringify({
+            type: 'join',
+            roomId: roomId,
+            userId: userId
+          }));
+        } else {
+          console.log('🔄 Reconnecting to signaling server');
+          connectToSignalingServer();
+        }
+      }, 100);
+      
     } catch (error) {
-      console.error('Error accessing media devices:', error);
-      alert('Unable to access camera/microphone. Please check permissions.');
+      console.error('❌ Error accessing media devices:', error);
+      alert('Unable to access camera/microphone. Please check permissions and try again.');
     }
   };
 
@@ -136,6 +153,7 @@ function RoomPage() {
           case 'user-joined':
             console.log('New user joined:', message.userId);
             if (message.userId !== userId && localStream) {
+              console.log('Creating offer for new user:', message.userId);
               await createPeerConnection(message.userId, true);
             }
             addNotification(`User ${message.userId.slice(0, 6)} joined the call`);
@@ -144,6 +162,17 @@ function RoomPage() {
           case 'room-info':
             console.log('Room info received:', message);
             setParticipantCount(message.participantCount || 1);
+            
+            // Connect to existing users when we join
+            if (message.existingUsers && localStream) {
+              console.log('Connecting to existing users:', message.existingUsers);
+              for (const existingUserId of message.existingUsers) {
+                if (existingUserId !== userId) {
+                  console.log('Creating connection to existing user:', existingUserId);
+                  await createPeerConnection(existingUserId, false);
+                }
+              }
+            }
             break;
             
           case 'offer':
@@ -207,7 +236,14 @@ function RoomPage() {
   };
 
   const createPeerConnection = async (peerId, createOffer) => {
-    console.log(`Creating peer connection with ${peerId}, createOffer: ${createOffer}`);
+    console.log(`🔄 Creating peer connection with ${peerId}, createOffer: ${createOffer}`);
+    
+    // Close existing connection if any
+    if (peerConnections.current.has(peerId)) {
+      console.log(`🔄 Closing existing connection with ${peerId}`);
+      peerConnections.current.get(peerId).close();
+      peerConnections.current.delete(peerId);
+    }
     
     const pc = new RTCPeerConnection(iceServers);
     peerConnections.current.set(peerId, pc);
@@ -215,18 +251,20 @@ function RoomPage() {
     // Add local stream tracks if available
     if (localStream) {
       localStream.getTracks().forEach(track => {
-        console.log(`Adding track to peer connection: ${track.kind}`);
+        console.log(`➕ Adding ${track.kind} track to peer connection with ${peerId}`);
         pc.addTrack(track, localStream);
       });
     }
 
     // Handle incoming tracks (remote streams)
     pc.ontrack = (event) => {
-      console.log(`Received remote track from ${peerId}:`, event.streams[0]);
+      console.log(`📺 Received remote ${event.track.kind} track from ${peerId}`);
+      const remoteStream = event.streams[0];
+      
       setRemoteStreams(prev => {
         const newStreams = new Map(prev);
-        newStreams.set(peerId, event.streams[0]);
-        console.log(`Updated remote streams, total: ${newStreams.size + 1}`);
+        newStreams.set(peerId, remoteStream);
+        console.log(`🎥 Updated remote streams, total participants: ${newStreams.size + 1}`);
         return newStreams;
       });
     };
@@ -234,7 +272,7 @@ function RoomPage() {
     // Handle ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log(`Sending ICE candidate to ${peerId}`);
+        console.log(`🧊 Sending ICE candidate to ${peerId}`);
         wsRef.current.send(JSON.stringify({
           type: 'ice-candidate',
           candidate: event.candidate,
@@ -242,24 +280,45 @@ function RoomPage() {
           from: userId,
           roomId: roomId
         }));
+      } else {
+        console.log(`🧊 ICE gathering completed for ${peerId}`);
       }
     };
 
     // Handle connection state changes
     pc.onconnectionstatechange = () => {
-      console.log(`Connection state with ${peerId}: ${pc.connectionState}`);
-      if (pc.connectionState === 'failed') {
-        console.log(`Connection failed with ${peerId}, attempting to reconnect...`);
-        // Could implement reconnection logic here
+      console.log(`🔗 Connection state with ${peerId}: ${pc.connectionState}`);
+      
+      if (pc.connectionState === 'connected') {
+        console.log(`✅ Successfully connected to ${peerId}`);
+      } else if (pc.connectionState === 'failed') {
+        console.log(`❌ Connection failed with ${peerId}, attempting to reconnect...`);
+        setTimeout(() => {
+          if (pc.connectionState === 'failed') {
+            createPeerConnection(peerId, createOffer);
+          }
+        }, 1000);
+      } else if (pc.connectionState === 'disconnected') {
+        console.log(`⚠️ Disconnected from ${peerId}`);
       }
+    };
+
+    // Handle ICE connection state changes
+    pc.oniceconnectionstatechange = () => {
+      console.log(`🧊 ICE connection state with ${peerId}: ${pc.iceConnectionState}`);
     };
 
     // Create offer if needed
     if (createOffer) {
       try {
-        console.log(`Creating offer for ${peerId}`);
-        const offer = await pc.createOffer();
+        console.log(`📤 Creating offer for ${peerId}`);
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true
+        });
         await pc.setLocalDescription(offer);
+        
+        console.log(`📤 Sending offer to ${peerId}`);
         wsRef.current.send(JSON.stringify({
           type: 'offer',
           offer: offer,
@@ -268,7 +327,7 @@ function RoomPage() {
           roomId: roomId
         }));
       } catch (error) {
-        console.error(`Error creating offer for ${peerId}:`, error);
+        console.error(`❌ Error creating offer for ${peerId}:`, error);
       }
     }
 
@@ -277,12 +336,22 @@ function RoomPage() {
 
   const handleOffer = async (message) => {
     try {
-      console.log(`Handling offer from ${message.from}`);
+      console.log(`📥 Handling offer from ${message.from}`);
+      
+      // Create peer connection for incoming offer
       const pc = await createPeerConnection(message.from, false);
+      
+      console.log(`📥 Setting remote description for ${message.from}`);
       await pc.setRemoteDescription(new RTCSessionDescription(message.offer));
-      const answer = await pc.createAnswer();
+      
+      console.log(`📤 Creating answer for ${message.from}`);
+      const answer = await pc.createAnswer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true
+      });
       await pc.setLocalDescription(answer);
       
+      console.log(`📤 Sending answer to ${message.from}`);
       wsRef.current.send(JSON.stringify({
         type: 'answer',
         answer: answer,
@@ -290,39 +359,41 @@ function RoomPage() {
         from: userId,
         roomId: roomId
       }));
-      console.log(`Sent answer to ${message.from}`);
+      
+      console.log(`✅ Successfully handled offer from ${message.from}`);
     } catch (error) {
-      console.error('Error handling offer:', error);
+      console.error(`❌ Error handling offer from ${message.from}:`, error);
     }
   };
 
   const handleAnswer = async (message) => {
     try {
-      console.log(`Handling answer from ${message.from}`);
+      console.log(`📥 Handling answer from ${message.from}`);
       const pc = peerConnections.current.get(message.from);
       if (pc) {
+        console.log(`📥 Setting remote description for answer from ${message.from}`);
         await pc.setRemoteDescription(new RTCSessionDescription(message.answer));
-        console.log(`Set remote description for ${message.from}`);
+        console.log(`✅ Successfully handled answer from ${message.from}`);
       } else {
-        console.error(`No peer connection found for ${message.from}`);
+        console.error(`❌ No peer connection found for ${message.from} when handling answer`);
       }
     } catch (error) {
-      console.error('Error handling answer:', error);
+      console.error(`❌ Error handling answer from ${message.from}:`, error);
     }
   };
 
   const handleIceCandidate = async (message) => {
     try {
-      console.log(`Handling ICE candidate from ${message.from}`);
+      console.log(`🧊 Handling ICE candidate from ${message.from}`);
       const pc = peerConnections.current.get(message.from);
       if (pc) {
         await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
-        console.log(`Added ICE candidate for ${message.from}`);
+        console.log(`✅ Added ICE candidate for ${message.from}`);
       } else {
-        console.error(`No peer connection found for ${message.from}`);
+        console.error(`❌ No peer connection found for ${message.from} when handling ICE candidate`);
       }
     } catch (error) {
-      console.error('Error handling ICE candidate:', error);
+      console.error(`❌ Error handling ICE candidate from ${message.from}:`, error);
     }
   };
 

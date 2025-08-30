@@ -84,17 +84,21 @@ function handleJoinRoom(ws, userId, roomId) {
     return;
   }
   
+  // Get existing users before adding new user
+  const existingUsers = Array.from(room.keys());
+  
   // Add user to room
   room.set(userId, ws);
   
   console.log(`User ${userId} joined room ${roomId}. Room size: ${room.size}`);
   
-  // Send room info to the joining user
+  // Send room info to the joining user with existing users list
   ws.send(JSON.stringify({
     type: 'room-info',
     participantCount: room.size,
     roomId: roomId,
-    userId: userId
+    userId: userId,
+    existingUsers: existingUsers
   }));
   
   // Notify all existing users about the new user (except the user who just joined)
@@ -110,12 +114,6 @@ function handleJoinRoom(ws, userId, roomId) {
         type: 'room-info',
         participantCount: room.size,
         roomId: roomId
-      }));
-      
-      // Notify the new user about existing users
-      ws.send(JSON.stringify({
-        type: 'user-joined',
-        userId: clientId
       }));
     }
   });
