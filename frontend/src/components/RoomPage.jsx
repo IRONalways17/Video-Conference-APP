@@ -89,6 +89,23 @@ function RoomPage() {
     }
 
     setConnectionStatus('connecting');
+    
+    // First, warm up the backend with HTTP request
+    console.log('Warming up backend server...');
+    fetch('https://video-conference-app-59k6.onrender.com')
+      .then(response => response.json())
+      .then(data => {
+        console.log('Backend warmed up:', data);
+        // Now try WebSocket connection
+        initiateWebSocketConnection();
+      })
+      .catch(error => {
+        console.warn('Backend warm-up failed, trying WebSocket anyway:', error);
+        initiateWebSocketConnection();
+      });
+  };
+
+  const initiateWebSocketConnection = () => {
     wsRef.current = new WebSocket(WS_URL);
 
     wsRef.current.onopen = () => {

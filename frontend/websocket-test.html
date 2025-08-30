@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test</title>
+</head>
+<body>
+    <h1>WebSocket Connection Test</h1>
+    <div id="status">Connecting...</div>
+    <div id="logs"></div>
+
+    <script>
+        const statusDiv = document.getElementById('status');
+        const logsDiv = document.getElementById('logs');
+        
+        function log(message) {
+            console.log(message);
+            logsDiv.innerHTML += '<p>' + new Date().toLocaleTimeString() + ': ' + message + '</p>';
+        }
+
+        function testWebSocket() {
+            const wsUrl = 'wss://video-conference-app-59k6.onrender.com';
+            log('Attempting to connect to: ' + wsUrl);
+            
+            const ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function() {
+                log('✅ WebSocket connected successfully!');
+                statusDiv.textContent = 'Connected';
+                statusDiv.style.color = 'green';
+                
+                // Test sending a message
+                ws.send(JSON.stringify({
+                    type: 'join',
+                    roomId: 'test-room',
+                    userId: 'test-user-' + Math.random().toString(36).substr(2, 9)
+                }));
+                
+                setTimeout(() => {
+                    ws.close();
+                    log('Connection closed');
+                }, 2000);
+            };
+            
+            ws.onerror = function(error) {
+                log('❌ WebSocket error: ' + error);
+                statusDiv.textContent = 'Error';
+                statusDiv.style.color = 'red';
+            };
+            
+            ws.onclose = function(event) {
+                log('WebSocket closed. Code: ' + event.code + ', Reason: ' + event.reason);
+                if (event.code !== 1000) {
+                    statusDiv.textContent = 'Disconnected (Code: ' + event.code + ')';
+                    statusDiv.style.color = 'red';
+                }
+            };
+            
+            ws.onmessage = function(event) {
+                log('📨 Received: ' + event.data);
+            };
+        }
+
+        // Test connection when page loads
+        testWebSocket();
+    </script>
+</body>
+</html>
