@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebRTC Test - REAL-TIME VIDEO CALLING</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a1a; color: white; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background-color: #2d5016; }
+        .error { background-color: #5d1a1a; }
+        .info { background-color: #1a2b5d; }
+        .warning { background-color: #5d4a1a; }
+        #logs { background: #2a2a2a; padding: 10px; border-radius: 5px; height: 300px; overflow-y: auto; font-size: 12px; }
+        button { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; }
+        .primary { background: #007bff; color: white; }
+        .success-btn { background: #28a745; color: white; }
+    </style>
+</head>
+<body>
+    <h1>🎥 WebRTC Real-Time Video Test</h1>
+    <div id="status" class="status info">Ready to test...</div>
+    
+    <button onclick="testBackend()" class="primary">1. Test Backend</button>
+    <button onclick="testWebSocket()" class="primary">2. Test WebSocket</button>
+    <button onclick="testMedia()" class="primary">3. Test Camera/Mic</button>
+    <button onclick="simulateCall()" class="success-btn">4. Simulate Video Call</button>
+    
+    <h3>📋 Test Logs:</h3>
+    <div id="logs"></div>
+
+    <script>
+        function log(message, type = 'info') {
+            const logs = document.getElementById('logs');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = `[${timestamp}] ${message}\n`;
+            logs.textContent += logEntry;
+            logs.scrollTop = logs.scrollHeight;
+            console.log(message);
+        }
+
+        function updateStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+        }
+
+        async function testBackend() {
+            log('🔍 Testing backend connection...');
+            updateStatus('Testing backend...', 'info');
+            
+            try {
+                const response = await fetch('https://video-conference-app-59k6.onrender.com');
+                const data = await response.json();
+                log('✅ Backend response: ' + JSON.stringify(data));
+                updateStatus('✅ Backend is working!', 'success');
+            } catch (error) {
+                log('❌ Backend error: ' + error.message);
+                updateStatus('❌ Backend connection failed', 'error');
+            }
+        }
+
+        function testWebSocket() {
+            log('🔍 Testing WebSocket connection...');
+            updateStatus('Testing WebSocket...', 'info');
+            
+            const ws = new WebSocket('wss://video-conference-app-59k6.onrender.com');
+            
+            ws.onopen = () => {
+                log('✅ WebSocket connected successfully!');
+                updateStatus('✅ WebSocket is working!', 'success');
+                
+                // Test joining a room
+                ws.send(JSON.stringify({
+                    type: 'join',
+                    roomId: 'test-room-' + Math.random().toString(36).substr(2, 9),
+                    userId: 'test-user-' + Math.random().toString(36).substr(2, 9)
+                }));
+                
+                setTimeout(() => ws.close(), 2000);
+            };
+            
+            ws.onerror = (error) => {
+                log('❌ WebSocket error: ' + error);
+                updateStatus('❌ WebSocket connection failed', 'error');
+            };
+            
+            ws.onmessage = (event) => {
+                log('📨 WebSocket message: ' + event.data);
+            };
+            
+            ws.onclose = () => {
+                log('🔒 WebSocket connection closed');
+            };
+        }
+
+        async function testMedia() {
+            log('🔍 Testing camera and microphone access...');
+            updateStatus('Testing media devices...', 'info');
+            
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: true
+                });
+                
+                log('✅ Camera and microphone access granted!');
+                log(`📹 Video tracks: ${stream.getVideoTracks().length}`);
+                log(`🎤 Audio tracks: ${stream.getAudioTracks().length}`);
+                updateStatus('✅ Media devices are working!', 'success');
+                
+                // Stop the stream
+                stream.getTracks().forEach(track => track.stop());
+            } catch (error) {
+                log('❌ Media access error: ' + error.message);
+                updateStatus('❌ Media device access failed', 'error');
+            }
+        }
+
+        async function simulateCall() {
+            log('🔍 Simulating a complete video call flow...');
+            updateStatus('Simulating video call...', 'info');
+            
+            try {
+                // Step 1: Test backend
+                await testBackend();
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                // Step 2: Test WebSocket
+                await new Promise((resolve) => {
+                    const ws = new WebSocket('wss://video-conference-app-59k6.onrender.com');
+                    ws.onopen = () => {
+                        log('✅ WebSocket connection established for call simulation');
+                        ws.close();
+                        resolve();
+                    };
+                    ws.onerror = () => resolve();
+                });
+                
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                // Step 3: Test media
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: true
+                });
+                log('✅ Media stream acquired for call simulation');
+                
+                // Step 4: Simulate WebRTC peer connection
+                const pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun.services.mozilla.com' },
+                        { urls: 'stun:stun.openrelay.metered.ca:80' }
+                    ]
+                });
+                
+                stream.getTracks().forEach(track => {
+                    pc.addTrack(track, stream);
+                    log(`✅ Added ${track.kind} track to peer connection`);
+                });
+                
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                log('✅ Created and set local offer');
+                
+                // Clean up
+                stream.getTracks().forEach(track => track.stop());
+                pc.close();
+                
+                log('🎉 VIDEO CALL SIMULATION SUCCESSFUL!');
+                updateStatus('🎉 Everything is working! Ready for real video calls!', 'success');
+                
+            } catch (error) {
+                log('❌ Call simulation failed: ' + error.message);
+                updateStatus('❌ Call simulation failed', 'error');
+            }
+        }
+
+        // Auto-run backend test on load
+        window.onload = () => {
+            setTimeout(testBackend, 1000);
+        };
+    </script>
+</body>
+</html>

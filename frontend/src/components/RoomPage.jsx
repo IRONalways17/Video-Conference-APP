@@ -3,8 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import VideoGrid from './VideoGrid';
 import Controls from './Controls';
 
-// Updated with Render backend URL
-const WS_URL = import.meta.env.VITE_WS_URL || 'wss://video-conference-app-59k6.onrender.com';
+const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 
 function RoomPage() {
   const { roomId } = useParams();
@@ -44,23 +43,20 @@ function RoomPage() {
     }
   }, [localStream]);
 
-  // Auto-connect to signaling server when component mounts
+  // Cleanup on unmount
   useEffect(() => {
-    if (roomId) {
-      // Connect to signaling server immediately to check room status
-      connectToSignalingServer();
-    }
-    
     return () => {
       if (wsRef.current) {
         wsRef.current.close();
       }
     };
-  }, [roomId]);
+  }, []);
 
   const handleInteract = async () => {
     try {
       console.log('🎥 Requesting media access...');
+      setConnectionStatus('getting-media');
+      
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 640 },
@@ -78,25 +74,13 @@ function RoomPage() {
       setLocalStream(stream);
       setHasJoined(true);
       
-      // Wait a moment for state to update
-      setTimeout(() => {
-        // Reconnect to signaling server with media stream
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          console.log('📡 Sending join message with media ready');
-          wsRef.current.send(JSON.stringify({
-            type: 'join',
-            roomId: roomId,
-            userId: userId
-          }));
-        } else {
-          console.log('🔄 Reconnecting to signaling server');
-          connectToSignalingServer();
-        }
-      }, 100);
+      // Now connect to signaling server and join room
+      connectToSignalingServer();
       
     } catch (error) {
       console.error('❌ Error accessing media devices:', error);
-      alert('Unable to access camera/microphone. Please check permissions and try again.');
+      setConnectionStatus('media-error');
+      alert(`Unable to access camera/microphone: ${error.message}\n\nPlease:\n1. Allow camera/mic permissions\n2. Refresh the page\n3. Try again`);
     }
   };
 
@@ -106,20 +90,7 @@ function RoomPage() {
     }
 
     setConnectionStatus('connecting');
-    
-    // First, warm up the backend with HTTP request
-    console.log('Warming up backend server...');
-    fetch('https://video-conference-app-59k6.onrender.com')
-      .then(response => response.json())
-      .then(data => {
-        console.log('Backend warmed up:', data);
-        // Now try WebSocket connection
-        initiateWebSocketConnection();
-      })
-      .catch(error => {
-        console.warn('Backend warm-up failed, trying WebSocket anyway:', error);
-        initiateWebSocketConnection();
-      });
+    initiateWebSocketConnection();
   };
 
   const initiateWebSocketConnection = () => {
@@ -128,10 +99,10 @@ function RoomPage() {
     wsRef.current.onopen = () => {
       console.log('Connected to signaling server');
       setIsConnected(true);
-      setConnectionStatus('connected');
+      setConnectionStatus('joining-room');
       reconnectAttempts.current = 0;
       
-      // Join the room immediately
+      // Join the room
       wsRef.current.send(JSON.stringify({
         type: 'join',
         roomId: roomId,
@@ -151,27 +122,24 @@ function RoomPage() {
             break;
             
           case 'user-joined':
-            console.log('New user joined:', message.userId);
+            console.log('🆕 New user joined:', message.userId);
             if (message.userId !== userId && localStream) {
-              console.log('Creating offer for new user:', message.userId);
-              await createPeerConnection(message.userId, true);
+              addNotification(`User ${message.userId.slice(0, 6)} joined the call`);
+              
+              // Create connection and send offer to new user
+              console.log('🤝 Creating peer connection with offer for new user:', message.userId);
+              setTimeout(() => createPeerConnection(message.userId, true), 500);
             }
-            addNotification(`User ${message.userId.slice(0, 6)} joined the call`);
             break;
             
           case 'room-info':
-            console.log('Room info received:', message);
+            console.log('🏠 Room info received:', message);
             setParticipantCount(message.participantCount || 1);
+            setConnectionStatus('connected');
             
-            // Connect to existing users when we join
-            if (message.existingUsers && localStream) {
-              console.log('Connecting to existing users:', message.existingUsers);
-              for (const existingUserId of message.existingUsers) {
-                if (existingUserId !== userId) {
-                  console.log('Creating connection to existing user:', existingUserId);
-                  await createPeerConnection(existingUserId, false);
-                }
-              }
+            // When we join and get existing users, wait for them to send offers
+            if (message.existingUsers && message.existingUsers.length > 0) {
+              console.log('🔄 Room has existing users:', message.existingUsers);
             }
             break;
             
@@ -248,25 +216,33 @@ function RoomPage() {
     const pc = new RTCPeerConnection(iceServers);
     peerConnections.current.set(peerId, pc);
 
-    // Add local stream tracks if available
+    // CRITICAL: Add local stream tracks FIRST before creating offers
     if (localStream) {
-      localStream.getTracks().forEach(track => {
-        console.log(`➕ Adding ${track.kind} track to peer connection with ${peerId}`);
+      console.log(`➕ Adding ${localStream.getTracks().length} tracks to peer connection with ${peerId}`);
+      localStream.getTracks().forEach((track, index) => {
+        console.log(`  ➕ Adding track ${index + 1}: ${track.kind} (enabled: ${track.enabled})`);
         pc.addTrack(track, localStream);
       });
+    } else {
+      console.warn(`⚠️ No local stream available when creating connection with ${peerId}`);
     }
 
-    // Handle incoming tracks (remote streams)
+    // Handle incoming tracks (remote streams) - CRITICAL FOR RECEIVING VIDEO
     pc.ontrack = (event) => {
-      console.log(`📺 Received remote ${event.track.kind} track from ${peerId}`);
-      const remoteStream = event.streams[0];
+      console.log(`📺 RECEIVED remote ${event.track.kind} track from ${peerId}`);
+      console.log(`📺 Stream details:`, event.streams[0]);
       
-      setRemoteStreams(prev => {
-        const newStreams = new Map(prev);
-        newStreams.set(peerId, remoteStream);
-        console.log(`🎥 Updated remote streams, total participants: ${newStreams.size + 1}`);
-        return newStreams;
-      });
+      if (event.streams && event.streams[0]) {
+        const remoteStream = event.streams[0];
+        console.log(`📺 Adding remote stream for ${peerId}, tracks: ${remoteStream.getTracks().length}`);
+        
+        setRemoteStreams(prev => {
+          const newStreams = new Map(prev);
+          newStreams.set(peerId, remoteStream);
+          console.log(`🎥 UPDATED: Total remote streams: ${newStreams.size}, Total participants: ${newStreams.size + 1}`);
+          return newStreams;
+        });
+      }
     };
 
     // Handle ICE candidates
@@ -290,14 +266,15 @@ function RoomPage() {
       console.log(`🔗 Connection state with ${peerId}: ${pc.connectionState}`);
       
       if (pc.connectionState === 'connected') {
-        console.log(`✅ Successfully connected to ${peerId}`);
+        console.log(`✅ SUCCESSFULLY CONNECTED to ${peerId}`);
       } else if (pc.connectionState === 'failed') {
         console.log(`❌ Connection failed with ${peerId}, attempting to reconnect...`);
         setTimeout(() => {
           if (pc.connectionState === 'failed') {
-            createPeerConnection(peerId, createOffer);
+            console.log(`🔄 Retrying connection with ${peerId}`);
+            createPeerConnection(peerId, true); // Retry with offer
           }
-        }, 1000);
+        }, 2000);
       } else if (pc.connectionState === 'disconnected') {
         console.log(`⚠️ Disconnected from ${peerId}`);
       }
@@ -305,10 +282,13 @@ function RoomPage() {
 
     // Handle ICE connection state changes
     pc.oniceconnectionstatechange = () => {
-      console.log(`🧊 ICE connection state with ${peerId}: ${pc.iceConnectionState}`);
+      console.log(`🧊 ICE state with ${peerId}: ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        console.log(`🎉 ICE CONNECTION SUCCESS with ${peerId}`);
+      }
     };
 
-    // Create offer if needed
+    // Create offer if needed (only for the person who was already in the room)
     if (createOffer) {
       try {
         console.log(`📤 Creating offer for ${peerId}`);
@@ -318,7 +298,7 @@ function RoomPage() {
         });
         await pc.setLocalDescription(offer);
         
-        console.log(`📤 Sending offer to ${peerId}`);
+        console.log(`📤 SENDING OFFER to ${peerId}`);
         wsRef.current.send(JSON.stringify({
           type: 'offer',
           offer: offer,

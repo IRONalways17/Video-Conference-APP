@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Video Call Flow Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a1a; color: white; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .step { background: #2a2a2a; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #007bff; }
+        .success { border-left-color: #28a745; background: #1a3d1a; }
+        .error { border-left-color: #dc3545; background: #3d1a1a; }
+        .warning { border-left-color: #ffc107; background: #3d3d1a; }
+        button { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; background: #007bff; color: white; }
+        video { width: 300px; height: 200px; background: #000; border-radius: 8px; margin: 10px; }
+        .videos { display: flex; flex-wrap: wrap; gap: 10px; }
+        #logs { background: #000; padding: 10px; border-radius: 5px; height: 200px; overflow-y: auto; font-size: 12px; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎥 Video Call Flow Test</h1>
+        <p>This simulates the exact flow that should happen when 2 people join a video call:</p>
+        
+        <div class="step">
+            <h3>Step 1: Person A joins room</h3>
+            <button onclick="personAJoins()">Person A - Get Camera & Join Room</button>
+            <div id="statusA">Not joined</div>
+        </div>
+        
+        <div class="step">
+            <h3>Step 2: Person B joins room</h3>
+            <button onclick="personBJoins()">Person B - Get Camera & Join Room</button>
+            <div id="statusB">Not joined</div>
+        </div>
+        
+        <div class="step">
+            <h3>Expected Result: Both should see each other's video</h3>
+            <div class="videos">
+                <div>
+                    <h4>Person A sees:</h4>
+                    <video id="videoA1" autoplay muted></video>
+                    <div>Their own video</div>
+                    <video id="videoA2" autoplay></video>
+                    <div>Person B's video</div>
+                </div>
+                <div>
+                    <h4>Person B sees:</h4>
+                    <video id="videoB1" autoplay muted></video>
+                    <div>Their own video</div>
+                    <video id="videoB2" autoplay></video>
+                    <div>Person A's video</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="step">
+            <h3>🔍 Connection Logs:</h3>
+            <div id="logs"></div>
+        </div>
+    </div>
+
+    <script>
+        let wsA, wsB;
+        let streamA, streamB;
+        let pcA, pcB;
+        const roomId = 'test-room-' + Math.random().toString(36).substr(2, 9);
+        const userIdA = 'person-A-' + Math.random().toString(36).substr(2, 9);
+        const userIdB = 'person-B-' + Math.random().toString(36).substr(2, 9);
+
+        function log(message) {
+            const logs = document.getElementById('logs');
+            const timestamp = new Date().toLocaleTimeString();
+            logs.textContent += `[${timestamp}] ${message}\n`;
+            logs.scrollTop = logs.scrollHeight;
+            console.log(message);
+        }
+
+        async function personAJoins() {
+            try {
+                log('🅰️ Person A: Getting camera access...');
+                streamA = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById('videoA1').srcObject = streamA;
+                log('✅ Person A: Got camera access');
+                
+                log('🅰️ Person A: Connecting to WebSocket...');
+                wsA = new WebSocket('wss://video-conference-app-59k6.onrender.com');
+                
+                wsA.onopen = () => {
+                    log('✅ Person A: Connected to server');
+                    log('🅰️ Person A: Joining room...');
+                    wsA.send(JSON.stringify({
+                        type: 'join',
+                        roomId: roomId,
+                        userId: userIdA
+                    }));
+                };
+                
+                wsA.onmessage = async (event) => {
+                    const message = JSON.parse(event.data);
+                    log(`🅰️ Person A received: ${message.type}`);
+                    
+                    if (message.type === 'user-joined' && message.userId === userIdB) {
+                        log('🅰️ Person A: Creating offer for Person B...');
+                        await createConnectionA(true);
+                    } else if (message.type === 'offer' && message.from === userIdB) {
+                        log('🅰️ Person A: Received offer from Person B, creating answer...');
+                        await createConnectionA(false);
+                        await handleOfferA(message);
+                    } else if (message.type === 'answer' && message.from === userIdB) {
+                        await handleAnswerA(message);
+                    } else if (message.type === 'ice-candidate' && message.from === userIdB) {
+                        await handleIceCandidateA(message);
+                    }
+                };
+                
+                document.getElementById('statusA').textContent = 'Joined and waiting...';
+            } catch (error) {
+                log(`❌ Person A error: ${error.message}`);
+                document.getElementById('statusA').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        async function personBJoins() {
+            try {
+                log('🅱️ Person B: Getting camera access...');
+                streamB = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById('videoB1').srcObject = streamB;
+                log('✅ Person B: Got camera access');
+                
+                log('🅱️ Person B: Connecting to WebSocket...');
+                wsB = new WebSocket('wss://video-conference-app-59k6.onrender.com');
+                
+                wsB.onopen = () => {
+                    log('✅ Person B: Connected to server');
+                    log('🅱️ Person B: Joining room...');
+                    wsB.send(JSON.stringify({
+                        type: 'join',
+                        roomId: roomId,
+                        userId: userIdB
+                    }));
+                };
+                
+                wsB.onmessage = async (event) => {
+                    const message = JSON.parse(event.data);
+                    log(`🅱️ Person B received: ${message.type}`);
+                    
+                    if (message.type === 'offer' && message.from === userIdA) {
+                        log('🅱️ Person B: Received offer from Person A, creating answer...');
+                        await createConnectionB(false);
+                        await handleOfferB(message);
+                    } else if (message.type === 'answer' && message.from === userIdA) {
+                        await handleAnswerB(message);
+                    } else if (message.type === 'ice-candidate' && message.from === userIdA) {
+                        await handleIceCandidateB(message);
+                    }
+                };
+                
+                document.getElementById('statusB').textContent = 'Joined room!';
+            } catch (error) {
+                log(`❌ Person B error: ${error.message}`);
+                document.getElementById('statusB').textContent = 'Error: ' + error.message;
+            }
+        }
+
+        async function createConnectionA(createOffer) {
+            pcA = new RTCPeerConnection({
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun.services.mozilla.com' }
+                ]
+            });
+            
+            streamA.getTracks().forEach(track => {
+                pcA.addTrack(track, streamA);
+            });
+            
+            pcA.ontrack = (event) => {
+                log('🅰️ Person A: Received remote video from Person B!');
+                document.getElementById('videoA2').srcObject = event.streams[0];
+            };
+            
+            pcA.onicecandidate = (event) => {
+                if (event.candidate) {
+                    wsA.send(JSON.stringify({
+                        type: 'ice-candidate',
+                        candidate: event.candidate,
+                        to: userIdB,
+                        from: userIdA,
+                        roomId: roomId
+                    }));
+                }
+            };
+            
+            if (createOffer) {
+                const offer = await pcA.createOffer();
+                await pcA.setLocalDescription(offer);
+                wsA.send(JSON.stringify({
+                    type: 'offer',
+                    offer: offer,
+                    to: userIdB,
+                    from: userIdA,
+                    roomId: roomId
+                }));
+                log('🅰️ Person A: Sent offer to Person B');
+            }
+        }
+
+        async function createConnectionB(createOffer) {
+            pcB = new RTCPeerConnection({
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun.services.mozilla.com' }
+                ]
+            });
+            
+            streamB.getTracks().forEach(track => {
+                pcB.addTrack(track, streamB);
+            });
+            
+            pcB.ontrack = (event) => {
+                log('🅱️ Person B: Received remote video from Person A!');
+                document.getElementById('videoB2').srcObject = event.streams[0];
+            };
+            
+            pcB.onicecandidate = (event) => {
+                if (event.candidate) {
+                    wsB.send(JSON.stringify({
+                        type: 'ice-candidate',
+                        candidate: event.candidate,
+                        to: userIdA,
+                        from: userIdB,
+                        roomId: roomId
+                    }));
+                }
+            };
+        }
+
+        async function handleOfferA(message) {
+            await pcA.setRemoteDescription(new RTCSessionDescription(message.offer));
+            const answer = await pcA.createAnswer();
+            await pcA.setLocalDescription(answer);
+            wsA.send(JSON.stringify({
+                type: 'answer',
+                answer: answer,
+                to: userIdB,
+                from: userIdA,
+                roomId: roomId
+            }));
+            log('🅰️ Person A: Sent answer to Person B');
+        }
+
+        async function handleOfferB(message) {
+            await pcB.setRemoteDescription(new RTCSessionDescription(message.offer));
+            const answer = await pcB.createAnswer();
+            await pcB.setLocalDescription(answer);
+            wsB.send(JSON.stringify({
+                type: 'answer',
+                answer: answer,
+                to: userIdA,
+                from: userIdB,
+                roomId: roomId
+            }));
+            log('🅱️ Person B: Sent answer to Person A');
+        }
+
+        async function handleAnswerA(message) {
+            await pcA.setRemoteDescription(new RTCSessionDescription(message.answer));
+            log('🅰️ Person A: Set remote description from answer');
+        }
+
+        async function handleAnswerB(message) {
+            await pcB.setRemoteDescription(new RTCSessionDescription(message.answer));
+            log('🅱️ Person B: Set remote description from answer');
+        }
+
+        async function handleIceCandidateA(message) {
+            await pcA.addIceCandidate(new RTCIceCandidate(message.candidate));
+        }
+
+        async function handleIceCandidateB(message) {
+            await pcB.addIceCandidate(new RTCIceCandidate(message.candidate));
+        }
+
+        log('🚀 Ready to test! Click "Person A" first, then "Person B"');
+        log(`📍 Test room ID: ${roomId}`);
+    </script>
+</body>
+</html>
