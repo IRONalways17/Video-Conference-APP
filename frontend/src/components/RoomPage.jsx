@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import VideoGrid from './VideoGrid';
 import Controls from './Controls';
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
+const WS_URL = import.meta.env.VITE_WS_URL || 'wss://video-conference-app-59k6.onrender.com';
 
 function RoomPage() {
   const { roomId } = useParams();
