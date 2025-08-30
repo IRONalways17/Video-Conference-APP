@@ -86,12 +86,26 @@ function handleJoinRoom(ws, userId, roomId) {
   
   console.log(`User ${userId} joined room ${roomId}. Room size: ${room.size}`);
   
+  // Send room info to the joining user
+  ws.send(JSON.stringify({
+    type: 'room-info',
+    participantCount: room.size,
+    roomId: roomId
+  }));
+  
   // Notify all existing users about the new user
   room.forEach((client, clientId) => {
     if (clientId !== userId && client.readyState === WebSocket.OPEN) {
       client.send(JSON.stringify({
         type: 'user-joined',
         userId: userId
+      }));
+      
+      // Update participant count for existing users
+      client.send(JSON.stringify({
+        type: 'room-info',
+        participantCount: room.size,
+        roomId: roomId
       }));
     }
   });
@@ -110,6 +124,13 @@ function handleLeaveRoom(userId, roomId) {
         client.send(JSON.stringify({
           type: 'user-left',
           userId: userId
+        }));
+        
+        // Update participant count for remaining users
+        client.send(JSON.stringify({
+          type: 'room-info',
+          participantCount: room.size,
+          roomId: roomId
         }));
       }
     });
