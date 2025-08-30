@@ -75,8 +75,15 @@ VITE_WS_URL=wss://your-backend.onrender.com
 1. Push your code to GitHub
 2. Connect your GitHub repository to Vercel
 3. Set the root directory to `frontend`
-4. Add environment variable: `VITE_WS_URL` with your backend WebSocket URL
+4. Add environment variable: `VITE_WS_URL` with your backend WebSocket URL (use wss:// for production)
 5. Deploy
+
+**Important**: The project uses TailwindCSS v3 for compatibility. If you encounter build errors, ensure your package.json has:
+```json
+"tailwindcss": "^3.4.0",
+"postcss": "^8.4.32",
+"autoprefixer": "^10.4.16"
+```
 
 ### Backend (Render)
 1. Push your code to GitHub
@@ -86,6 +93,12 @@ VITE_WS_URL=wss://your-backend.onrender.com
 5. Set build command: `npm install`
 6. Set start command: `npm start`
 7. Deploy
+
+### Common Deployment Issues
+
+1. **TailwindCSS Build Error**: Make sure you're using TailwindCSS v3, not v4
+2. **WebSocket Connection Failed**: Ensure VITE_WS_URL uses `wss://` (not `ws://`) for production
+3. **CORS Issues**: The backend is configured to accept all origins by default
 
 ## Usage
 
