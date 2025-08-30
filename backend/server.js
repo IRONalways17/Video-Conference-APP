@@ -24,9 +24,9 @@ app.get('/', (req, res) => {
 
 wss.on('connection', (ws) => {
   let currentRoom = null;
-  let userId = generateUserId();
+  let userId = null;
   
-  console.log(`New connection: ${userId}`);
+  console.log(`New connection established`);
 
   ws.on('message', (message) => {
     try {
@@ -34,6 +34,7 @@ wss.on('connection', (ws) => {
       
       switch (data.type) {
         case 'join':
+          userId = data.userId || generateUserId();
           handleJoinRoom(ws, userId, data.roomId);
           currentRoom = data.roomId;
           break;
@@ -53,9 +54,11 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    console.log(`Connection closed: ${userId}`);
-    if (currentRoom) {
-      handleLeaveRoom(userId, currentRoom);
+    if (userId) {
+      console.log(`Connection closed: ${userId}`);
+      if (currentRoom) {
+        handleLeaveRoom(userId, currentRoom);
+      }
     }
   });
 
@@ -90,10 +93,11 @@ function handleJoinRoom(ws, userId, roomId) {
   ws.send(JSON.stringify({
     type: 'room-info',
     participantCount: room.size,
-    roomId: roomId
+    roomId: roomId,
+    userId: userId
   }));
   
-  // Notify all existing users about the new user
+  // Notify all existing users about the new user (except the user who just joined)
   room.forEach((client, clientId) => {
     if (clientId !== userId && client.readyState === WebSocket.OPEN) {
       client.send(JSON.stringify({
@@ -106,6 +110,12 @@ function handleJoinRoom(ws, userId, roomId) {
         type: 'room-info',
         participantCount: room.size,
         roomId: roomId
+      }));
+      
+      // Notify the new user about existing users
+      ws.send(JSON.stringify({
+        type: 'user-joined',
+        userId: clientId
       }));
     }
   });

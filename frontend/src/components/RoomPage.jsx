@@ -3,8 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import VideoGrid from './VideoGrid';
 import Controls from './Controls';
 
-// Update this with your actual backend URL after deployment
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
+// Updated with Render backend URL
+const WS_URL = import.meta.env.VITE_WS_URL || 'wss://video-conference-app-59k6.onrender.com';
 
 function RoomPage() {
   const { roomId } = useParams();
@@ -17,8 +17,9 @@ function RoomPage() {
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [hasJoined, setHasJoined] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
-  const [participantCount, setParticipantCount] = useState(0);
+  const [participantCount, setParticipantCount] = useState(1);
   const [notifications, setNotifications] = useState([]);
+  const [userId] = useState(() => Math.random().toString(36).substr(2, 9));
   
   const wsRef = useRef(null);
   const localVideoRef = useRef(null);
@@ -28,7 +29,11 @@ function RoomPage() {
 
   const iceServers = {
     iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' }
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' }
     ]
   };
 
@@ -63,9 +68,11 @@ function RoomPage() {
       
       // Reconnect to signaling server with media stream
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        // Send join message with user ID
         wsRef.current.send(JSON.stringify({
           type: 'join',
-          roomId: roomId
+          roomId: roomId,
+          userId: userId
         }));
       } else {
         connectToSignalingServer();
@@ -93,7 +100,8 @@ function RoomPage() {
       // Join the room immediately
       wsRef.current.send(JSON.stringify({
         type: 'join',
-        roomId: roomId
+        roomId: roomId,
+        userId: userId
       }));
     };
 
@@ -110,32 +118,43 @@ function RoomPage() {
             
           case 'user-joined':
             console.log('New user joined:', message.userId);
-            await createPeerConnection(message.userId, true);
+            if (message.userId !== userId && localStream) {
+              await createPeerConnection(message.userId, true);
+            }
             addNotification(`User ${message.userId.slice(0, 6)} joined the call`);
             break;
             
           case 'room-info':
-            setParticipantCount(message.participantCount || 0);
+            console.log('Room info received:', message);
+            setParticipantCount(message.participantCount || 1);
             break;
             
           case 'offer':
             console.log('Received offer from:', message.from);
-            await handleOffer(message);
+            if (message.from !== userId) {
+              await handleOffer(message);
+            }
             break;
             
           case 'answer':
             console.log('Received answer from:', message.from);
-            await handleAnswer(message);
+            if (message.from !== userId) {
+              await handleAnswer(message);
+            }
             break;
             
           case 'ice-candidate':
-            await handleIceCandidate(message);
+            if (message.from !== userId) {
+              await handleIceCandidate(message);
+            }
             break;
             
           case 'user-left':
             console.log('User left:', message.userId);
-            handleUserLeft(message.userId);
-            addNotification(`User ${message.userId.slice(0, 6)} left the call`);
+            if (message.userId !== userId) {
+              handleUserLeft(message.userId);
+              addNotification(`User ${message.userId.slice(0, 6)} left the call`);
+            }
             break;
             
           case 'error':
@@ -170,22 +189,27 @@ function RoomPage() {
     };
   };
 
-  const createPeerConnection = async (userId, createOffer) => {
+  const createPeerConnection = async (peerId, createOffer) => {
+    console.log(`Creating peer connection with ${peerId}, createOffer: ${createOffer}`);
+    
     const pc = new RTCPeerConnection(iceServers);
-    peerConnections.current.set(userId, pc);
+    peerConnections.current.set(peerId, pc);
 
-    // Add local stream tracks
+    // Add local stream tracks if available
     if (localStream) {
       localStream.getTracks().forEach(track => {
+        console.log(`Adding track to peer connection: ${track.kind}`);
         pc.addTrack(track, localStream);
       });
     }
 
-    // Handle incoming tracks
+    // Handle incoming tracks (remote streams)
     pc.ontrack = (event) => {
+      console.log(`Received remote track from ${peerId}:`, event.streams[0]);
       setRemoteStreams(prev => {
         const newStreams = new Map(prev);
-        newStreams.set(userId, event.streams[0]);
+        newStreams.set(peerId, event.streams[0]);
+        console.log(`Updated remote streams, total: ${newStreams.size + 1}`);
         return newStreams;
       });
     };
@@ -193,73 +217,112 @@ function RoomPage() {
     // Handle ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        console.log(`Sending ICE candidate to ${peerId}`);
         wsRef.current.send(JSON.stringify({
           type: 'ice-candidate',
           candidate: event.candidate,
-          to: userId,
+          to: peerId,
+          from: userId,
           roomId: roomId
         }));
       }
     };
 
+    // Handle connection state changes
+    pc.onconnectionstatechange = () => {
+      console.log(`Connection state with ${peerId}: ${pc.connectionState}`);
+      if (pc.connectionState === 'failed') {
+        console.log(`Connection failed with ${peerId}, attempting to reconnect...`);
+        // Could implement reconnection logic here
+      }
+    };
+
     // Create offer if needed
     if (createOffer) {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      wsRef.current.send(JSON.stringify({
-        type: 'offer',
-        offer: offer,
-        to: userId,
-        roomId: roomId
-      }));
+      try {
+        console.log(`Creating offer for ${peerId}`);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        wsRef.current.send(JSON.stringify({
+          type: 'offer',
+          offer: offer,
+          to: peerId,
+          from: userId,
+          roomId: roomId
+        }));
+      } catch (error) {
+        console.error(`Error creating offer for ${peerId}:`, error);
+      }
     }
 
     return pc;
   };
 
   const handleOffer = async (message) => {
-    const pc = await createPeerConnection(message.from, false);
-    await pc.setRemoteDescription(new RTCSessionDescription(message.offer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    
-    wsRef.current.send(JSON.stringify({
-      type: 'answer',
-      answer: answer,
-      to: message.from,
-      roomId: roomId
-    }));
+    try {
+      console.log(`Handling offer from ${message.from}`);
+      const pc = await createPeerConnection(message.from, false);
+      await pc.setRemoteDescription(new RTCSessionDescription(message.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      
+      wsRef.current.send(JSON.stringify({
+        type: 'answer',
+        answer: answer,
+        to: message.from,
+        from: userId,
+        roomId: roomId
+      }));
+      console.log(`Sent answer to ${message.from}`);
+    } catch (error) {
+      console.error('Error handling offer:', error);
+    }
   };
 
   const handleAnswer = async (message) => {
-    const pc = peerConnections.current.get(message.from);
-    if (pc) {
-      await pc.setRemoteDescription(new RTCSessionDescription(message.answer));
+    try {
+      console.log(`Handling answer from ${message.from}`);
+      const pc = peerConnections.current.get(message.from);
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(message.answer));
+        console.log(`Set remote description for ${message.from}`);
+      } else {
+        console.error(`No peer connection found for ${message.from}`);
+      }
+    } catch (error) {
+      console.error('Error handling answer:', error);
     }
   };
 
   const handleIceCandidate = async (message) => {
-    const pc = peerConnections.current.get(message.from);
-    if (pc) {
-      await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+    try {
+      console.log(`Handling ICE candidate from ${message.from}`);
+      const pc = peerConnections.current.get(message.from);
+      if (pc) {
+        await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+        console.log(`Added ICE candidate for ${message.from}`);
+      } else {
+        console.error(`No peer connection found for ${message.from}`);
+      }
+    } catch (error) {
+      console.error('Error handling ICE candidate:', error);
     }
   };
 
-  const handleUserLeft = (userId) => {
-    const pc = peerConnections.current.get(userId);
+  const handleUserLeft = (leftUserId) => {
+    console.log(`Cleaning up connection for user ${leftUserId}`);
+    const pc = peerConnections.current.get(leftUserId);
     if (pc) {
       pc.close();
-      peerConnections.current.delete(userId);
+      peerConnections.current.delete(leftUserId);
     }
     
     setRemoteStreams(prev => {
       const newStreams = new Map(prev);
-      newStreams.delete(userId);
+      newStreams.delete(leftUserId);
+      console.log(`Removed stream for ${leftUserId}, remaining streams: ${newStreams.size}`);
       return newStreams;
     });
-    
-    // Update participant count
-    setParticipantCount(prev => Math.max(0, prev - 1));
   };
 
   const toggleMute = () => {
@@ -408,7 +471,7 @@ function RoomPage() {
               </span>
             </div>
             <span className="text-gray-400 text-sm">
-              Participants: {participantCount || (remoteStreams.size + 1)} / 10
+              Participants: {participantCount} / 10
             </span>
           </div>
           
